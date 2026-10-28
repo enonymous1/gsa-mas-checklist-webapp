@@ -1,0 +1,14 @@
+# VS Code (tasks.json is tracked; local settings are not)
+.vscode/*
+
+# Apps Script: the scriptId is deployer-specific and must never be committed
+.clasp.json
+
+# Node
+node_modules/
+
+# OS specific
+.DS_Store
+._*
+Desktop.ini
+Thumbs.db

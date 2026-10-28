@@ -1,0 +1,8 @@
+# All text files use LF line endings, on every platform. The original
+# repository mixed CRLF (history) and LF (working tree), which made
+# every file show as modified after a fresh clone.
+* text=auto eol=lf
+*.html text
+*.js text
+*.json text
+*.md text

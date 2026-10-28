@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      # No install step: the test suite uses only Node's built-in
+      # test runner and vm module. clasp (for deployment) is a
+      # devDependency installed locally with `npm install`.
+      - name: Syntax check
+        run: node scripts/check.mjs
+      - name: Tests
+        run: node --test

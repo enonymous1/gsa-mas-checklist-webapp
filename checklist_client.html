@@ -1,0 +1,583 @@
+<script>
+let allChecklistItems = [];
+let currentParsedSheet = "Parsed Checklist Items";
+let parsedSheetNames = [];
+let parsedSheetsCache = {};
+let currentUserInfo = null; // Store current user info for comments
+let checklistProgress = {}; // { sheetName: { lineNumber: true } }, loaded once per page load
+
+function sortParsedSheetNames(sheetNames) {
+  const MAIN = "Parsed Checklist Items";
+  // Filter out sheets containing '(None)' and exclude the main sheet
+  const others = sheetNames
+    .filter(n => n !== MAIN && !n.includes('(None)'))
+    .sort();
+  return [MAIN, ...others];
+}
+
+function prefetchAllParsedChecklists(onDone) {
+  showChecklistLoading(true);
+  google.script.run
+    .withSuccessHandler(function(result) {
+      parsedSheetsCache = result;
+      parsedSheetNames = sortParsedSheetNames(Object.keys(parsedSheetsCache));
+      if (!parsedSheetNames.includes(currentParsedSheet)) {
+        currentParsedSheet = parsedSheetNames[0] || "";
+      }
+      
+      // Comments are merged into the cached rows by the server
+      // (getAllParsedChecklists reads each sheet once). Progress is
+      // loaded separately so a progress failure never blocks the list.
+      loadChecklistProgress(function() {
+        renderParsedTabs(parsedSheetNames, currentParsedSheet);
+        if (currentParsedSheet) renderSectionsFromCache(currentParsedSheet);
+        showChecklistLoading(false);
+        if (typeof onDone === "function") onDone();
+      });
+    })
+    .withFailureHandler(function(error) {
+      showChecklistLoading(false);
+      document.getElementById('checklistAccordion').innerHTML =
+        `<div class="text-danger small">Error loading checklist: ${escapeHtml(error.message || error)}</div>`;
+      console.error("Checklist load error:", error);
+      if (typeof onDone === "function") onDone();
+    })
+    .getAllParsedChecklists();
+}
+
+function loadChecklistProgress(onDone) {
+  google.script.run
+    .withSuccessHandler(function(progress) {
+      checklistProgress = progress || {};
+      if (typeof onDone === "function") onDone();
+    })
+    .withFailureHandler(function(error) {
+      console.error("Error loading progress:", error);
+      checklistProgress = {};
+      if (typeof onDone === "function") onDone();
+    })
+    .getProgress();
+}
+
+function saveProgressForItem(item, previousChecked) {
+  google.script.run
+    .withSuccessHandler(function() {})
+    .withFailureHandler(function(error) {
+      console.error("Error saving progress:", error);
+      item.checked = previousChecked;
+      updateProgress();
+      updateCardCheckbox(item);
+    })
+    .setProgress(currentParsedSheet, item['LINE Number'], item.checked);
+}
+
+function renderParsedTabs(sheetNames, activeSheetName) {
+  const tabs = document.getElementById('parsedSheetsTabs');
+  tabs.innerHTML = '';
+  sheetNames.forEach(function(name, idx) {
+    const tabId = 'tab-' + idx;
+    const isActive = name === activeSheetName;
+    const li = document.createElement('li');
+    let label = name === "Parsed Checklist Items" ? "Checklist Items" : name.replace(/^Parsed\s*/, '');
+    li.className = 'nav-item';
+    li.innerHTML = `<button class="nav-link${isActive ? ' active' : ''}" id="${tabId}" type="button" data-sheet="${escapeAttr(name)}">${escapeHtml(label)}</button>`;
+    tabs.appendChild(li);
+
+    li.querySelector('button').addEventListener('click', function() {
+      if (currentParsedSheet !== name) {
+        currentParsedSheet = name;
+        renderParsedTabs(sheetNames, name);
+        renderSectionsFromCache(name);
+      }
+    });
+  });
+}
+
+function renderSectionsFromCache(sheetName) {
+  showChecklistLoading(true);
+  setTimeout(() => {
+    const data = parsedSheetsCache[sheetName] || [];
+    renderSections(groupBy(data, "Section"), sheetName);
+    showChecklistLoading(false);
+  }, 100);
+}
+
+// Function to update comment indicators on all cards
+function updateCommentIndicators() {
+  const cards = document.querySelectorAll('.checklist-card');
+  cards.forEach(card => {
+    const item = card._itemReference;
+    if (!item) return;
+    
+    // Find the right-side container
+    const rightContainer = card.querySelector('.d-flex.align-items-center[style*="flex-shrink:0"]');
+    if (!rightContainer) return;
+    
+    // Remove existing comment indicator
+    const existingIndicator = rightContainer.querySelector('.badge.bg-info');
+    if (existingIndicator) {
+      existingIndicator.remove();
+    }
+    
+    // Add new comment indicator if comments exist
+    if (item.comments && item.comments.length > 0) {
+      const commentBadge = document.createElement('span');
+      commentBadge.className = 'badge bg-info text-white me-2 d-flex align-items-center';
+      commentBadge.style.cssText = 'font-size: 0.75rem; padding: 0.25rem 0.5rem;';
+      commentBadge.title = `${item.comments.length} comment${item.comments.length !== 1 ? 's' : ''}`;
+      commentBadge.innerHTML = `💬 ${item.comments.length}`;
+      
+      // Insert before the LINE number (if it exists) or at the beginning
+      const lineNumber = rightContainer.querySelector('.text-muted.small');
+      if (lineNumber) {
+        rightContainer.insertBefore(commentBadge, lineNumber);
+      } else {
+        rightContainer.appendChild(commentBadge);
+      }
+    }
+  });
+}
+
+function renderSections(sections, sheetName) {
+  const container = document.getElementById('checklistAccordion');
+  container.innerHTML = '';
+  allChecklistItems = [];
+  const sectionNames = Object.keys(sections);
+
+  sectionNames.forEach((sectionName, sIdx) => {
+    const sectionId = 'section' + sIdx;
+    const collapseId = 'collapse' + sIdx;
+    const sectionItem = document.createElement('div');
+    sectionItem.className = 'accordion-item';
+
+    sectionItem.innerHTML += `
+      <h2 class="accordion-header" id="${sectionId}Header">
+        <button class="accordion-button ${sIdx===0 ? '' : 'collapsed'}" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="${sIdx===0}" aria-controls="${collapseId}">
+          <span class="fw-semibold">${escapeHtml(sectionName)}</span>
+        </button>
+      </h2>
+    `;
+
+    const bodyDiv = document.createElement('div');
+    bodyDiv.className = `accordion-collapse collapse${sIdx===0 ? ' show' : ''}`;
+    bodyDiv.id = collapseId;
+    bodyDiv.setAttribute('aria-labelledby', `${sectionId}Header`);
+
+    const cardsDiv = document.createElement('div');
+    cardsDiv.className = 'py-3';
+
+    sections[sectionName].forEach((item, idx) => {
+      item.checked = !!(checklistProgress[sheetName] && checklistProgress[sheetName][item['LINE Number']]);
+      allChecklistItems.push(item);
+
+      const blurb = (item['Additional Comments/Instructions'] || '').trim();
+      const blurbShort = blurb.length > 180 ? blurb.slice(0, 180) + "…" : blurb;
+
+      const card = document.createElement('div');
+      card.className = 'card checklist-card mb-3 border-0 shadow-sm position-relative';
+      card.tabIndex = 0;
+      card.setAttribute('role', 'button');
+      card.setAttribute('aria-label', item['Required Documentation'] || item['Required Doc'] || '');
+
+      card.innerHTML = `
+        <div class="card-body d-flex align-items-center">
+          <input type="checkbox" class="form-check-input me-3" style="flex-shrink:0;" tabindex="0">
+          <div class="flex-grow-1">
+            <div class="fw-semibold">${escapeHtml(item['Required Documentation'] || item['Required Doc'] || '(No Required Documentation)')}</div>
+            ${item['Solicitation Reference'] ? `<div class="small text-secondary mt-1"><span class="fw-normal">Ref:</span> <span class="fst-italic">${escapeHtml(item['Solicitation Reference'])}</span></div>` : ''}
+            ${blurbShort ? `<div class="mt-2 text-info fw-bold">${escapeHtml(blurbShort)}</div>` : ''}
+          </div>
+          <div class="d-flex align-items-center" style="flex-shrink:0;">
+            ${item.comments && item.comments.length > 0 ? `
+              <span class="badge bg-info text-white me-2 d-flex align-items-center" 
+                    style="font-size: 0.75rem; padding: 0.25rem 0.5rem;" 
+                    title="${item.comments.length} comment${item.comments.length !== 1 ? 's' : ''}">
+                💬 ${item.comments.length}
+              </span>
+            ` : ''}
+            ${item['LINE Number'] ? `<div class="text-muted small ms-2">${escapeHtml(item['LINE Number'])}</div>` : ''}
+          </div>
+        </div>
+      `;
+
+      const checkbox = card.querySelector('input[type="checkbox"]');
+      checkbox.addEventListener('click', function(e) {
+        const previousChecked = item.checked;
+        item.checked = e.target.checked;
+        updateProgress();
+        saveProgressForItem(item, previousChecked);
+        e.stopPropagation();
+      });
+
+      card.addEventListener('click', function(e) {
+        if (e.target === checkbox) return;
+        openModal(item);
+      });
+      card.addEventListener('keydown', function(e) {
+        if ((e.key === "Enter" || e.key === " ") && document.activeElement === card) {
+          openModal(item);
+          e.preventDefault();
+        }
+      });
+
+      // Store reference to the item for dynamic updates
+      card.setAttribute('data-item-id', item['LINE Number'] || idx);
+      card._itemReference = item; // Store direct reference for easier access
+
+      cardsDiv.appendChild(card);
+    });
+
+    bodyDiv.appendChild(cardsDiv);
+    sectionItem.appendChild(bodyDiv);
+    container.appendChild(sectionItem);
+  });
+
+  updateProgress();
+}
+
+function updateProgress() {
+  const checked = allChecklistItems.filter(i => i.checked).length;
+  const total = allChecklistItems.length;
+  const percent = total === 0 ? 0 : Math.round(100 * checked / total);
+  document.getElementById('progress-bar').style.width = percent + "%";
+  document.getElementById('progress-label').textContent = `${checked} of ${total} completed (${percent}%)`;
+}
+
+function openModal(item) {
+  // Store reference to current item for hyperlink functionality
+  window.currentModalItem = item;
+  
+  const modalFields = document.getElementById('modal-fields-list');
+  modalFields.innerHTML = '';
+  
+  // Fields to exclude from display
+  const excludedFields = [
+    'checked', 
+    'userComment', 
+    'comments', // Comment data is handled in the dedicated comment section
+    'User Comments', // User Comments column from Google Sheets
+    'Submitted by Vendor', 
+    'CO Comments',
+    'Required Documentation', // Already shown as modal title
+    'Required Doc', // Alternative field name for required documentation
+    'LINE Number', // Now shown in header
+    'Section' // Now shown in hero section
+  ];
+  
+  // Show 'Additional Comments/Instructions' first if it exists and has a value
+  if (item['Additional Comments/Instructions'] && item['Additional Comments/Instructions'].trim() && !excludedFields.includes('Additional Comments/Instructions')) {
+    modalFields.innerHTML += `<li><strong>Additional Comments/Instructions:</strong> <span>${escapeHtml(item['Additional Comments/Instructions'])}</span></li>`;
+  }
+  
+  // Show all other fields that have values
+  Object.keys(item).forEach(key => {
+    if (excludedFields.includes(key)) return;
+    if (key === 'Additional Comments/Instructions') return; // Already shown first
+    
+    // Only show fields that have non-empty values
+    const value = item[key];
+    if (value && value.toString().trim()) {
+      modalFields.innerHTML += `<li><strong>${escapeHtml(key)}:</strong> <span>${escapeHtml(value)}</span></li>`;
+    }
+  });
+
+  document.getElementById('modal-doc').textContent = item['Required Documentation'] || item['Required Doc'] || '';
+  
+  // Set the LINE Number in the header (just the number, faded)
+  const lineNumberElement = document.getElementById('modal-line-number');
+  if (item['LINE Number']) {
+    lineNumberElement.textContent = item['LINE Number'];
+    lineNumberElement.style.display = '';
+  } else {
+    lineNumberElement.style.display = 'none';
+  }
+  
+  // Set the Section in the hero area and manage layout
+  const heroElement = document.getElementById('modal-hero');
+  const sectionTextElement = document.getElementById('modal-section-text');
+  const headerCloseButton = document.getElementById('modal-close-fallback');
+  const fallbackToggle = document.getElementById('modal-completion-fallback');
+  
+  if (item['Section']) {
+    sectionTextElement.textContent = item['Section'];
+    heroElement.style.display = '';
+    headerCloseButton.style.display = 'none'; // Hide fallback close button
+    fallbackToggle.style.display = 'none'; // Hide fallback completion toggle
+  } else {
+    heroElement.style.display = 'none';
+    headerCloseButton.style.display = ''; // Show fallback close button
+    fallbackToggle.style.display = ''; // Show fallback completion toggle
+  }
+  
+  // Set up completion status toggle button (both hero and fallback versions)
+  const toggleButtonHero = document.getElementById('modal-completion-toggle-hero');
+  const toggleButton = document.getElementById('modal-completion-toggle');
+  
+  function updateToggleButtons() {
+    const updateButton = (btn) => {
+      if (item.checked) {
+        btn.className = 'btn btn-sm btn-success';
+        btn.innerHTML = '<span class="fw-semibold">✓ Complete</span>';
+      } else {
+        btn.className = 'btn btn-sm btn-outline-light';
+        btn.innerHTML = '<span class="fw-semibold">✗ Not Complete</span>';
+      }
+    };
+    
+    // Update hero button
+    updateButton(toggleButtonHero);
+    
+    // Update fallback button
+    if (item.checked) {
+      toggleButton.className = 'btn btn-lg btn-success';
+      toggleButton.innerHTML = '<span class="fw-semibold">✓ Complete</span>';
+    } else {
+      toggleButton.className = 'btn btn-lg btn-outline-danger';
+      toggleButton.innerHTML = '<span class="fw-semibold">✗ Not Complete</span>';
+    }
+  }
+  
+  // Initialize button states
+  updateToggleButtons();
+  
+  // Add click event listeners for both toggle buttons
+  const handleToggle = function() {
+    const previousChecked = item.checked;
+    item.checked = !item.checked;
+    updateToggleButtons();
+    updateProgress();
+    updateCardCheckbox(item);
+    saveProgressForItem(item, previousChecked);
+  };
+  
+  toggleButtonHero.onclick = handleToggle;
+  toggleButton.onclick = handleToggle;
+  
+  const commentBox = document.getElementById('modal-user-comment');
+  commentBox.value = '';
+  
+  // Set up auto-link detection on paste
+  commentBox.addEventListener('paste', function(e) {
+    setTimeout(() => {
+      autoDetectAndFormatLinks(commentBox);
+    }, 10);
+  });
+  
+  // Set up send comment functionality
+  const sendBtn = document.getElementById('modal-send-comment');
+  sendBtn.onclick = function() {
+    sendComment(item, commentBox);
+  };
+  
+  // Allow Enter+Ctrl to send comment
+  commentBox.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      sendComment(item, commentBox);
+      e.preventDefault();
+    }
+  });
+  
+  // Display comment history
+  displayCommentHistory(item);
+
+  // Update comment indicators to ensure they're current
+  updateCommentIndicators();
+
+  const modal = new bootstrap.Modal(document.getElementById('itemModal'));
+  modal.show();
+}
+
+function sendComment(item, commentBox) {
+  const commentText = commentBox.value.trim();
+  if (!commentText) return;
+
+  // Get user info for the comment
+  const userDisplayName = (currentUserInfo && currentUserInfo.hasEmail)
+    ? currentUserInfo.displayName
+    : 'User';
+
+  const newComment = {
+    text: commentText,
+    timestamp: new Date().toLocaleString(),
+    user: userDisplayName,
+    id: Date.now()
+  };
+
+  const lineNumber = item['LINE Number'];
+  if (!lineNumber) {
+    console.warn('Cannot save comment: no LINE Number found for item', item);
+    return;
+  }
+
+  // Append on the server (inside the script lock) so two users
+  // commenting at once cannot overwrite each other. The text is
+  // only cleared once the server confirms the save, so a failure
+  // never loses what the user typed.
+  google.script.run
+    .withSuccessHandler(function(comments) {
+      item.comments = comments;
+      commentBox.value = '';
+      displayCommentHistory(item);
+      updateCommentIndicators();
+      commentBox.focus();
+    })
+    .withFailureHandler(function(error) {
+      console.error('Error saving comment for line', lineNumber, ':', error);
+    })
+    .appendCommentToSheet(currentParsedSheet, lineNumber, newComment);
+}
+
+// Replace the whole comment list (comment edit / delete). onFailure
+// is called with no arguments so the caller can restore local state.
+function saveItemCommentsToSheet(item, onFailure) {
+  const lineNumber = item['LINE Number'];
+  if (!lineNumber) {
+    console.warn('Cannot save comment: no LINE Number found for item', item);
+    return;
+  }
+
+  google.script.run
+    .withSuccessHandler(function(comments) {
+      item.comments = comments;
+    })
+    .withFailureHandler(function(error) {
+      console.error('Error saving comments for line', lineNumber, ':', error);
+      if (typeof onFailure === 'function') onFailure();
+    })
+    .saveCommentToSheet(currentParsedSheet, lineNumber, item.comments || []);
+}
+
+function displayCommentHistory(item) {
+  const historySection = document.getElementById('modal-comments-history');
+  const commentsList = document.getElementById('modal-comments-list');
+  
+  if (!item.comments || item.comments.length === 0) {
+    historySection.style.display = 'none';
+    return;
+  }
+  
+  historySection.style.display = 'block';
+  
+  // Render comments (newest first)
+  commentsList.innerHTML = item.comments
+    .slice()
+    .reverse()
+    .map((comment, index) => {
+      const actualIndex = item.comments.length - 1 - index; // Get actual index in original array
+      const userName = comment.user || 'User'; // Use stored user name or fallback
+      return `
+        <div class="mb-3 pb-2 border-bottom comment-item" data-comment-id="${escapeAttr(comment.id)}">
+          <div class="d-flex justify-content-between align-items-start mb-1">
+            <div class="small text-muted">
+              <span class="fw-semibold">${escapeHtml(userName)}</span> • ${escapeHtml(comment.timestamp)}
+            </div>
+            <div class="btn-group btn-group-sm">
+              <button type="button" class="btn btn-outline-secondary btn-sm" onclick="editComment(${actualIndex})" title="Edit comment">
+                <svg width="12" height="12" fill="currentColor" viewBox="0 0 16 16">
+                  <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708L9.708 9.708a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168L12.146.146zM11.207 2.5L13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293L12.793 5.5zM9.854 8.146a.5.5 0 0 0-.708.708l.646.647.708-.708-.646-.647z"/>
+                </svg>
+              </button>
+              <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteComment(${actualIndex})" title="Delete comment">
+                <svg width="12" height="12" fill="currentColor" viewBox="0 0 16 16">
+                  <path d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5ZM11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H2.506a.58.58 0 0 0-.01 0H1.5a.5.5 0 0 0 0 1h.538l.853 10.66A2 2 0 0 0 4.885 16h6.23a2 2 0 0 0 1.994-1.84l.853-10.66h.538a.5.5 0 0 0 0-1h-.995a.59.59 0 0 0-.01 0H11Zm1.958 1-.846 10.58a1 1 0 0 1-.997.92h-6.23a1 1 0 0 1-.997-.92L3.042 3.5h9.916Zm-7.487 1a.5.5 0 0 1 .528.47l.5 8.5a.5.5 0 0 1-.998.06L5 5.03a.5.5 0 0 1 .47-.53Zm5.058 0a.5.5 0 0 1 .47.53l-.5 8.5a.5.5 0 1 1-.998-.06l.5-8.5a.5.5 0 0 1 .528-.47ZM8 4.5a.5.5 0 0 1 .5.5v8.5a.5.5 0 0 1-1 0V5a.5.5 0 0 1 .5-.5Z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="comment-text">${formatCommentText(comment.text)}</div>
+        </div>
+      `;
+    }).join('');
+}
+
+function formatCommentText(text) {
+  // Comment text is user-supplied and must never be inserted into the
+  // page as raw HTML. Escape the text in segments and linkify only
+  // http(s) URLs, escaping each segment exactly once: escaping the
+  // whole string first would double-escape the & in a link's href.
+  const input = String(text || '');
+  const urlRegex = /(https?:\/\/[^\s<>"']+)/g;
+  let result = '';
+  let lastIndex = 0;
+  let match;
+  while ((match = urlRegex.exec(input)) !== null) {
+    result += escapeHtml(input.slice(lastIndex, match.index));
+    const url = match[0];
+    result += '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(url) + '</a>';
+    lastIndex = match.index + url.length;
+  }
+  result += escapeHtml(input.slice(lastIndex));
+  return result;
+}
+
+function autoDetectAndFormatLinks(textArea) {
+  const text = textArea.value;
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  
+  // Check if there are URLs in the text
+  if (urlRegex.test(text)) {
+    // URLs are already in the text, no need to modify
+    // The formatting will happen when the comment is displayed
+    return;
+  }
+}
+
+function editComment(commentIndex) {
+  const item = window.currentModalItem;
+  if (!item || !item.comments || !item.comments[commentIndex]) return;
+  
+  const comment = item.comments[commentIndex];
+  const newText = prompt('Edit your comment:', comment.text);
+  
+  if (newText !== null && newText.trim() !== '') {
+    const previousText = comment.text;
+    const previousTimestamp = comment.timestamp;
+    comment.text = newText.trim();
+    comment.timestamp = new Date().toLocaleString() + ' (edited)';
+
+    // Save to Google Sheet; restore the previous text if it fails
+    saveItemCommentsToSheet(item, function() {
+      comment.text = previousText;
+      comment.timestamp = previousTimestamp;
+      displayCommentHistory(item);
+    });
+
+    displayCommentHistory(item);
+  }
+}
+
+function deleteComment(commentIndex) {
+  const item = window.currentModalItem;
+  if (!item || !item.comments || !item.comments[commentIndex]) return;
+  
+  if (confirm('Are you sure you want to delete this comment?')) {
+    const removed = item.comments.splice(commentIndex, 1);
+
+    // Save to Google Sheet; restore the comment if it fails
+    saveItemCommentsToSheet(item, function() {
+      item.comments.splice(commentIndex, 0, removed[0]);
+      displayCommentHistory(item);
+      updateCommentIndicators();
+    });
+
+    displayCommentHistory(item);
+
+    // Update comment indicators on cards
+    updateCommentIndicators();
+  }
+}
+
+function updateCardCheckbox(item) {
+  // Find the corresponding card checkbox and update it
+  const cards = document.querySelectorAll('.checklist-card');
+  cards.forEach(card => {
+    const checkbox = card.querySelector('input[type="checkbox"]');
+    const cardTitle = card.querySelector('.fw-semibold').textContent;
+    const itemTitle = item['Required Documentation'] || item['Required Doc'] || '';
+    
+    if (cardTitle === itemTitle) {
+      checkbox.checked = item.checked;
+    }
+  });
+}
+</script>

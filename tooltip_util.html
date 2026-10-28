@@ -1,0 +1,340 @@
+<script>
+// Reusable Sticky Tooltip Utility
+// This utility provides interactive tooltips that can be used across different pages
+
+// Initialize tooltips for a given container (defaults to document)
+function initializeStickyTooltips(container = document) {
+  const triggers = container.querySelectorAll('.sticky-tooltip-trigger:not([data-tooltip-initialized="true"])');
+  
+  triggers.forEach(trigger => {
+    // Mark as initialized first to prevent duplicates
+    trigger.setAttribute('data-tooltip-initialized', 'true');
+    
+    let hoverTimeout;
+    
+    // Store click mode on the trigger element itself
+    trigger.clickMode = false;
+    
+    // Add hover functionality
+    trigger.addEventListener('mouseenter', function(e) {
+      if (this.clickMode) return; // Don't show on hover if in click mode
+      
+      clearTimeout(hoverTimeout);
+      
+      // Only close tooltips that aren't for this trigger
+      const currentTooltipId = 'tooltip-' + Math.abs(this.getAttribute('data-description').split('').reduce((a,b)=>{a=((a<<5)-a)+b.charCodeAt(0);return a&a},0));
+      
+      // Close other tooltips, but not the one we're about to show
+      document.querySelectorAll('.sticky-tooltip').forEach(tooltip => {
+        if (tooltip.id !== currentTooltipId) {
+          tooltip.remove();
+        }
+      });
+      
+      // Delay to prevent rapid cycling and ensure stable hover
+      hoverTimeout = setTimeout(() => {
+        // Double-check if we're still hovering and not in click mode
+        if (this.matches(':hover') && !this.clickMode) {
+          showStickyTooltip(this, false); // false = hover mode
+        }
+      }, 150); // Increased delay to prevent conflicts
+    });
+    
+    trigger.addEventListener('mouseleave', function(e) {
+      if (this.clickMode) return; // Don't hide on mouse leave if in click mode
+      
+      // Clear any pending show timeout
+      clearTimeout(hoverTimeout);
+      
+      // Get the related target (where the mouse is moving to)
+      const relatedTarget = e.relatedTarget;
+      
+      // Don't close if moving to a tooltip or another trigger
+      if (relatedTarget && (
+        relatedTarget.closest('.sticky-tooltip') || 
+        relatedTarget.closest('.sticky-tooltip-trigger')
+      )) {
+        return;
+      }
+      
+      // Delay before closing to allow moving to tooltip
+      hoverTimeout = setTimeout(() => {
+        // Double-check that we're not hovering over tooltip or trigger
+        const hoveredTooltip = document.querySelector('.sticky-tooltip:hover');
+        const hoveredTrigger = document.querySelector('.sticky-tooltip-trigger:hover');
+        
+        if (!hoveredTooltip && !hoveredTrigger) {
+          closeAllStickyTooltips();
+        }
+      }, 300); // Even longer delay for better UX
+    });
+    
+    // Click functionality for sticky tooltips
+    trigger.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // Toggle between click mode and closed
+      if (this.clickMode && this.classList.contains('sticky-tooltip-active')) {
+        // Currently in click mode and active - close it
+        closeAllStickyTooltips();
+        this.clickMode = false;
+      } else {
+        // Not in click mode or not active - open in click mode
+        closeAllStickyTooltips();
+        showStickyTooltip(this, true); // true = click mode (sticky)
+        this.clickMode = true;
+      }
+    });
+  });
+  
+  // Add global click handler only once
+  if (!window.tooltipGlobalClickHandlerAdded) {
+    window.tooltipGlobalClickHandlerAdded = true;
+    
+    document.addEventListener('click', function(e) {
+      // Ignore synthetic events (not user-initiated)
+      if (!e.isTrusted) return;
+      // More specific targeting to avoid conflicts
+      const clickedTooltip = e.target.closest('.sticky-tooltip');
+      const clickedTrigger = e.target.closest('.sticky-tooltip-trigger');
+      if (!clickedTooltip && !clickedTrigger) {
+        setTimeout(() => {
+          if (!window.tooltipClosing) {
+            closeAllStickyTooltips();
+            document.querySelectorAll('.sticky-tooltip-trigger').forEach(t => {
+              t.clickMode = false;
+            });
+          }
+        }, 50);
+      }
+    }, false);
+  }
+}
+
+function showStickyTooltip(trigger, isClickMode = false) {
+  // Only set this flag if we're actually going to create a tooltip
+  const description = trigger.getAttribute('data-description');
+  if (!description) {
+    return;
+  }
+  
+  // Prevent global closing during tooltip creation (shorter duration)
+  window.tooltipClosing = true;
+  setTimeout(() => { window.tooltipClosing = false; }, 100);
+  
+  const rect = trigger.getBoundingClientRect();
+  
+  // Build the tooltip content with text nodes: the description
+  // comes from a spreadsheet and must never be inserted as raw HTML.
+  // Newlines become <br> elements; every other character is text.
+  const tooltip = document.createElement('div');
+  tooltip.className = 'sticky-tooltip bg-body text-body';
+  tooltip.setAttribute('data-click-mode', isClickMode);
+  const tooltipContent = document.createElement('div');
+  tooltipContent.className = 'sticky-tooltip-content';
+  const textSpan = document.createElement('div');
+  description.replace(/\r/g, '').split('\n').forEach(function(line, i) {
+    if (i) textSpan.appendChild(document.createElement('br'));
+    textSpan.appendChild(document.createTextNode(line));
+  });
+  tooltipContent.appendChild(textSpan);
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'btn-close btn-close-sm ms-2';
+  closeButton.setAttribute('aria-label', 'Close');
+  tooltipContent.appendChild(closeButton);
+  tooltip.appendChild(tooltipContent);
+  
+  // Add to DOM first with initial width to measure it
+  let tooltipWidth = 500;
+  let minWidth = 400;
+  
+  tooltip.style.cssText = `
+    position: fixed;
+    left: -9999px;
+    top: -9999px;
+    max-width: ${tooltipWidth}px;
+    min-width: ${minWidth}px;
+    z-index: 1060;
+    background: #fffbe6;
+    border: 2px solid #ff9800;
+    border-radius: 0.375rem;
+    box-shadow: 0 0.5rem 1rem rgba(0,0,0,.15);
+    padding: 1rem;
+    font-size: 1rem;
+    line-height: 1.5;
+    visibility: hidden;
+  `;
+  
+  document.body.appendChild(tooltip);
+  
+  // Calculate initial positioning
+  let leftPos = rect.right + 10;
+  let topPos = rect.top;
+  let initialHeight = tooltip.offsetHeight;
+  
+  // Check if tooltip would run off screen vertically
+  const spaceAbove = rect.top;
+  const spaceBelow = window.innerHeight - rect.bottom;
+  const wouldRunOffTop = topPos < 10;
+  const wouldRunOffBottom = (topPos + initialHeight) > (window.innerHeight - 10);
+  
+  // If tooltip runs off screen vertically, try making it wider to reduce height
+  if (wouldRunOffTop || wouldRunOffBottom) {
+    
+    // Try progressively wider widths
+    const maxScreenWidth = window.innerWidth - 40; // Leave 20px margin on each side
+    const widthOptions = [600, 700, 800, Math.min(900, maxScreenWidth)];
+    
+    for (let testWidth of widthOptions) {
+      if (testWidth > maxScreenWidth) break;
+      
+      tooltip.style.maxWidth = testWidth + 'px';
+      tooltip.style.minWidth = Math.min(minWidth, testWidth) + 'px';
+      
+      const newHeight = tooltip.offsetHeight;
+      
+      // Check if this width helps fit vertically
+      const fitsAbove = (rect.top - newHeight - 10) >= 10;
+      const fitsBelow = (rect.bottom + newHeight + 10) <= (window.innerHeight - 10);
+      const fitsAtCurrent = (topPos + newHeight) <= (window.innerHeight - 10);
+      
+      if (fitsAtCurrent || fitsAbove || fitsBelow) {
+        tooltipWidth = testWidth;
+        break;
+      }
+    }
+  }
+  
+  // Recalculate positioning with final width
+  const finalHeight = tooltip.offsetHeight;
+  
+  // Horizontal positioning
+  if (leftPos + tooltipWidth > window.innerWidth) {
+    leftPos = rect.left - tooltipWidth - 10;
+  }
+  
+  // If still off screen on the left, center it
+  if (leftPos < 10) {
+    leftPos = Math.max(10, (window.innerWidth - tooltipWidth) / 2);
+    topPos = rect.bottom + 10; // Show below instead
+  }
+  
+  // Vertical positioning with final height
+  if (topPos + finalHeight > window.innerHeight - 10) {
+    // Try to position above
+    const newTopPos = rect.top - finalHeight - 10;
+    if (newTopPos >= 10) {
+      topPos = newTopPos;
+    } else {
+      // If can't fit above either, position at top of screen
+      topPos = 10;
+    }
+  }
+  
+  // Ensure tooltip doesn't go above viewport
+  if (topPos < 10) {
+    topPos = 10;
+  }
+  
+  // Apply final positioning and make visible
+  tooltip.style.cssText = `
+    position: fixed;
+    left: ${leftPos}px;
+    top: ${topPos}px;
+    max-width: ${tooltipWidth}px;
+    min-width: ${Math.min(minWidth, tooltipWidth)}px;
+    z-index: 1060;
+    border: 1px solid var(--bs-border-color, #dee2e6);
+    border-radius: 0.375rem;
+    box-shadow: 0 0.5rem 1rem rgba(0,0,0,.15);
+    padding: 1rem;
+    font-size: 1rem;
+    line-height: 1.5;
+    visibility: visible;
+  `;
+  
+  
+  // Add close functionality
+  const closeBtn = tooltip.querySelector('.btn-close');
+  closeBtn.addEventListener('click', function() {
+    closeAllStickyTooltips();
+    // Reset click mode for the trigger
+    trigger.clickMode = false;
+  });
+  
+  // Different behavior for hover vs click mode
+  if (isClickMode) {
+    // Click mode - tooltip stays open until explicitly closed
+    tooltip.addEventListener('mouseenter', function() {
+      // Keep tooltip open while hovering in click mode
+    });
+    
+    tooltip.addEventListener('mouseleave', function() {
+      // Don't auto-close in click mode
+    });
+  } else {
+    // Hover mode - tooltip can be kept open by hovering
+    let tooltipTimeout;
+    
+    tooltip.addEventListener('mouseenter', function() {
+      // Clear any pending close timeout
+      clearTimeout(tooltipTimeout);
+    });
+    
+    tooltip.addEventListener('mouseleave', function() {
+      // Close tooltip when leaving tooltip area in hover mode
+      tooltipTimeout = setTimeout(() => {
+        // Double-check that we're not still hovering over trigger or tooltip
+        if (!tooltip.matches(':hover') && !trigger.matches(':hover')) {
+          closeAllStickyTooltips();
+        }
+      }, 150);
+    });
+  }
+  
+  // Mark trigger as active
+  trigger.classList.add('sticky-tooltip-active');
+}
+
+function closeAllStickyTooltips() {
+  // Prevent rapid successive calls
+  if (window.tooltipClosing) {
+    return;
+  }
+  window.tooltipClosing = true;
+  
+  // Add stack trace to see who's calling this
+  
+  // Remove all existing tooltips
+  document.querySelectorAll('.sticky-tooltip').forEach(tooltip => {
+    tooltip.remove();
+  });
+  
+  // Remove active state from triggers and reset click mode
+  document.querySelectorAll('.sticky-tooltip-active').forEach(trigger => {
+    trigger.classList.remove('sticky-tooltip-active');
+    // Don't reset click mode here unless explicitly closing via outside click
+    // This allows proper toggle behavior
+  });
+  
+  // Reset the closing flag after a short delay
+  setTimeout(() => {
+    window.tooltipClosing = false;
+  }, 50);
+}
+
+// Helper function to create tooltip icon HTML
+function createTooltipIcon(definition, iconColor = 'text-primary') {
+  if (!definition) return '';
+  
+  return '<span class="ms-1 ' + iconColor + ' d-inline-flex align-items-center sticky-tooltip-trigger"' +
+    ' data-description="' + definition.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '"' +
+    ' style="cursor:pointer;font-size:0.9rem;height:1.2em;vertical-align:middle;">' +
+    '<svg width="14" height="14" fill="currentColor" viewBox="0 0 16 16">' +
+    '<path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>' +
+    '<path d="M5.255 5.786a.237.237 0 0 0 .241.247h.825c.138 0 .248-.113.266-.25.09-.656.54-1.134 1.342-1.134.686 0 1.314.343 1.314 1.168 0 .635-.374.927-.965 1.371-.673.489-1.206 1.06-1.168 1.987l.003.217a.25.25 0 0 0 .25.246h.811a.25.25 0 0 0 .25-.25v-.105c0-.718.273-.927 1.01-1.486.609-.463 1.244-.977 1.244-2.056 0-1.511-1.276-2.241-2.673-2.241-1.267 0-2.655.59-2.75 2.286zm1.557 5.763c0 .533.425.927 1.01.927.609 0 1.028-.394 1.028-.927 0-.552-.42-.94-1.029-.94-.584 0-1.009.388-1.009.94z"/>' +
+    '</svg></span>';
+}
+</script>

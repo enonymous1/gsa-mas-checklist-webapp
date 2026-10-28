@@ -1,0 +1,34 @@
+<script>
+function fetchRelevantResources() {
+  showResourcesLoading(true);
+  google.script.run
+    .withSuccessHandler(renderRelevantResources)
+    .withFailureHandler(function(error) {
+      showResourcesLoading(false);
+      document.getElementById('relevant-resources-list').innerHTML =
+        `<li class="text-danger small">Error loading resources: ${escapeHtml(error.message || error)}</li>`;
+      console.error("Resources load error:", error);
+    })
+    .getRelevantResources();
+}
+function renderRelevantResources(resources) {
+  showResourcesLoading(false);
+  const list = document.getElementById('relevant-resources-list');
+  if (!resources || !resources.length) {
+    list.innerHTML = '<li class="text-muted small">No resources found.</li>';
+    return;
+  }
+  list.innerHTML = '';
+  resources.forEach(res => {
+    // Only http(s) links are rendered as links; anything else
+    // (javascript:, data:, ...) renders as plain text.
+    const href = isSafeHttpUrl(res.url) ? escapeAttr(res.url) : '#';
+    list.innerHTML += `
+      <li class="mb-3">
+        <a href="${href}" target="_blank" rel="noopener" class="fw-semibold">${escapeHtml(res.title)}</a>
+        ${res.reasoning ? `<div class="text-muted small">${escapeHtml(res.reasoning)}</div>` : ''}
+      </li>
+    `;
+  });
+}
+</script>

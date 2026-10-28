@@ -1,0 +1,345 @@
+<script>
+let sinPageData = [];
+let sinPageFilters = {};
+let sinPageSortField = "";
+let sinPageSortDir = 1;
+let sinPageChecked = {};
+let sinPageReturnInputId = null;
+let sinPageDropdownOptions = {};
+let sinPageGlossary = {}; // Store glossary definitions
+
+const DROPDOWN_FILTERS = [
+  "Large Category",
+  "TDR",
+  "State Local",
+  "Set Aside",
+  "OLM",
+  "Maximum Order Limit",
+  "Subcategory",
+  "Commodity Code"
+];
+const OMITTED_FILTERS = [
+  "Large Category Code",
+  "Subcategory Code",
+  "PSC Cd"
+];
+
+function showSINPage(targetInputId) {
+  sinPageReturnInputId = targetInputId;
+  document.getElementById('main-app').style.display = 'none';
+  document.getElementById('sin-page').style.display = '';
+  document.body.scrollTop = document.documentElement.scrollTop = 0;
+
+  // Reset state
+  sinPageSortField = "";
+  sinPageSortDir = 1;
+  sinPageFilters = {};
+  sinPageChecked = {};
+
+  // Fetch and cache unique dropdown options
+  if (!sinPageData.length) {
+    document.getElementById('sin-page').innerHTML = `
+      <div class="p-5 text-center bg-body"><span class="spinner-border"></span><div>Loading SINs...</div></div>
+    `;
+    
+    // Load both SIN data and glossary
+    Promise.all([
+      new Promise((resolve, reject) => {
+        fetchSINList(function(list) {
+          sinPageData = list;
+          sinPageDropdownOptions = {};
+          DROPDOWN_FILTERS.forEach(f => {
+            sinPageDropdownOptions[f] = Array.from(new Set(list.map(row => row[f]).filter(x => x && x !== ""))).sort();
+          });
+          resolve();
+        });
+      }),
+      new Promise((resolve, reject) => {
+        google.script.run
+          .withSuccessHandler(function(glossary) {
+            sinPageGlossary = glossary;
+            resolve();
+          })
+          .withFailureHandler(function(error) {
+            console.error("Error loading SIN glossary:", error);
+            sinPageGlossary = {}; // Continue without glossary
+            resolve();
+          })
+          .getSINGlossary();
+      })
+    ]).then(() => {
+      renderSINCardList();
+    });
+  } else {
+    renderSINCardList();
+  }
+}
+
+function renderSINCardList() {
+  if (!sinPageData.length) return;
+
+  const fields = Object.keys(sinPageData[0]);
+  
+  // Helper function to add tooltip icon if definition exists
+  function addTooltipIcon(fieldName) {
+    const definition = sinPageGlossary[fieldName];
+    
+    if (typeof createTooltipIcon !== 'function') {
+      console.error('createTooltipIcon function not available');
+      return '';
+    }
+    
+    return createTooltipIcon(definition, 'text-primary');
+  }
+  
+  // Dynamically detect the SIN Description field name
+  const sinDescriptionField = fields.find(f => f.toLowerCase().includes('sin') && f.toLowerCase().includes('descrip'));
+  // Build filter controls (exclude SIN Description, Subcategory Code)
+  const filterExclude = ["Subcategory Code"];
+  if (sinDescriptionField) filterExclude.push(sinDescriptionField);
+
+  // Remove 'Large Category Code' from dropdown options if present
+  // (No longer needed, DROPDOWN_FILTERS does not include it)
+  // Ensure 'Large Category Code' is not shown in filter controls
+  let filterHtml = `
+    <div class="row mb-3 g-2 align-items-end">
+      ${fields
+        .filter(f => 
+          f !== "Large Category Code" && 
+          !OMITTED_FILTERS.includes(f) && 
+          !filterExclude.includes(f)
+        )
+        .map(f => {
+          if (DROPDOWN_FILTERS.includes(f)) {
+            // Dropdown filter
+            return `
+              <div class="col-xl-2 col-lg-2 col-md-3 col-sm-4 col-6">
+                <label class="form-label small mb-1">${escapeHtml(f)}${addTooltipIcon(f)}</label>
+                <select class="form-select form-select-sm" data-field="${escapeAttr(f)}" onchange="sinCardOnDropdownFilter(this.dataset.field, this.value)">
+                  <option value="">(Any)</option>
+                  ${sinPageDropdownOptions[f].map(opt =>
+                    `<option value="${escapeAttr(opt)}"${sinPageFilters[f]===opt ? " selected" : ""}>${escapeHtml(opt)}</option>`
+                  ).join('')}
+                </select>
+              </div>
+            `;
+          } else {
+            // Text filter
+            return `
+              <div class="col-xl-2 col-lg-2 col-md-3 col-sm-4 col-6">
+                <label class="form-label small mb-1">${escapeHtml(f)}${addTooltipIcon(f)}</label>
+                <input type="text" class="form-control form-control-sm" 
+                  placeholder="Filter ${escapeAttr(f)}" value="${escapeAttr(sinPageFilters[f] || '')}" 
+                  data-field="${escapeAttr(f)}" onchange="sinCardOnFilter(this.dataset.field, this.value)">
+              </div>
+            `;
+          }
+        }).join('')}
+    </div>
+  `;
+
+  // Sorting controls
+  let sortHtml = `
+    <div class="row mb-3 align-items-center">
+      <div class="col-auto fw-bold">Sort by:</div>
+      <div class="col-auto">
+        <select id="sin-sort-field" class="form-select form-select-sm" style="min-width:160px;" onchange="sinCardOnSortField(this.value)">
+          <option value="">(None)</option>
+          ${fields.map(f => `<option value="${escapeAttr(f)}"${sinPageSortField===f?" selected":''}>${escapeHtml(f)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="col-auto">
+        <button class="btn btn-outline-secondary btn-sm" onclick="sinCardToggleSortDir()">${sinPageSortDir===1?"▲ Asc":"▼ Desc"}</button>
+      </div>
+      <div class="col"></div>
+    </div>
+  `;
+
+  // Filter and sort
+  let filtered = sinPageData.filter(row => {
+    return fields.every(f => {
+      if (OMITTED_FILTERS.includes(f)) return true;
+      if (DROPDOWN_FILTERS.includes(f) && sinPageFilters[f]) {
+        return row[f] === sinPageFilters[f];
+      }
+      const val = (row[f]||"").toString().toLowerCase();
+      const filter = (sinPageFilters[f]||"").toLowerCase();
+      return !filter || val.includes(filter);
+    });
+  });
+  if (sinPageSortField) {
+    filtered.sort((a, b) => {
+      let va = (a[sinPageSortField]||"").toString().toLowerCase();
+      let vb = (b[sinPageSortField]||"").toString().toLowerCase();
+      if (va < vb) return -sinPageSortDir;
+      if (va > vb) return sinPageSortDir;
+      return 0;
+    });
+  }
+
+  // Get currently selected SINs for display
+  let currentlySelected = Object.keys(sinPageChecked).filter(sinId => sinPageChecked[sinId]);
+
+  // Cards
+  // (Already declared above)
+  let cardsHtml = filtered.length ? filtered.map(row => {
+    const sinId = row["SIN"];
+    const isSelected = !!sinPageChecked[sinId];
+  // Prepare key/value pairs for flex rows (exclude Large Category Code, Subcategory Code)
+  const excludeFields = ["SIN", "SIN Title", "Large Category", "Subcategory", "Large Category Code", "Subcategory Code"];
+  if (sinDescriptionField) excludeFields.push(sinDescriptionField);
+  // Remove 'Large Category Code' from kvFields if present
+  const kvFields = fields.filter(f => !excludeFields.includes(f)).map(f => f).filter(f => f !== "Large Category Code");
+    const kvPairs = kvFields.filter(f => row[f]).map(f => `<div class='col-xl-2 col-lg-3 col-md-4 col-sm-6 col-12 mb-1'><span class='fw-semibold text-secondary'>${escapeHtml(f)}:</span> <span>${escapeHtml(row[f])}</span></div>`);
+    // Chunk into rows of 5
+    function chunk(arr, size) {
+      const out = [];
+      for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+      return out;
+    }
+    const kvRows = chunk(kvPairs, 5).map(rowHtml => `<div class='row g-2'>${rowHtml.join('')}</div>`).join('');
+    return `
+      <div class="sin-card card mb-3 shadow-sm bg-body-secondary${isSelected ? " border-success sin-card-selected" : ""}" style="transition:box-shadow .18s, border-color .18s;">
+        <div class="card-body">
+          <div class="row align-items-center">
+            <div class="col-lg-9 col-md-8 col-12">
+              <div class="d-flex align-items-center mb-2 sin-card-row1">
+                <span class="fw-semibold text-primary">${escapeHtml(row["Large Category"]||"")}</span>
+                <span class="mx-2 text-secondary">&raquo;</span>
+                <span class="fw-semibold text-primary">${escapeHtml(row["Subcategory"]||"")}</span>
+              </div>
+              <div class="mb-1 sin-card-row2 fw-bold fs-5 text-dark">${escapeHtml(row["SIN Title"]||"")}</div>
+              <div class="mb-2 sin-card-row3 text-secondary fst-italic">${escapeHtml(sinDescriptionField ? row[sinDescriptionField] || "" : "")}</div>
+              ${kvRows}
+            </div>
+            <div class="col-lg-3 col-md-4 col-12 d-flex flex-column align-items-center justify-content-center py-3">
+              <button class="btn ${isSelected ? 'btn-outline-success' : 'btn-primary'} btn-sm mb-2" 
+                      data-sin-id="${escapeAttr(sinId)}" onclick="sinCardToggleSelection(this.dataset.sinId)" 
+                      ${isSelected ? 'disabled' : ''}>
+                ${isSelected ? '✓ Added' : 'Add SIN'}
+              </button>
+              <span class="badge bg-primary" style="font-size:1.1rem">${escapeHtml(row["SIN"]||"")}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('') : `<div class="p-4 text-center text-muted bg-body-secondary">No SINs match current filters.</div>`;
+
+  // Main content
+  document.getElementById('sin-page').innerHTML = `
+    <div class="bg-body-secondary min-vh-100 w-100 py-4" style="height:100vh; overflow-y:auto;">
+      <div class="container-xl">
+        <div class="row gy-4">
+          <div class="col-12">
+            <div class="card shadow-lg border-0 bg-body">
+              <div class="card-body p-4">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <h2 class="h4 mb-0">SIN Selection Tool</h2>
+                  <button class="btn btn-secondary btn-sm" onclick="sinPageGoBack()">← Back to checklist</button>
+                </div>
+                ${sortHtml}
+                ${filterHtml}
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                  <span class="text-secondary small">${filtered.length} SIN(s) shown</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12">
+            <div class="card shadow-lg border-0 bg-body">
+              <div class="card-body p-4">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <span class="fw-semibold">Selected SINs (${currentlySelected.length})</span>
+                  <button class="btn btn-success btn-sm" onclick="sinCardApplySelected()" ${currentlySelected.length ? '' : 'disabled'}>Apply Selected SINs</button>
+                </div>
+                <div class="card bg-body border-0 p-3" style="min-height: 60px;">
+                  ${currentlySelected.length ? 
+                    currentlySelected.map(sinId => `
+                      <span class="badge bg-primary me-2 mb-2 d-inline-flex align-items-center" style="font-size: 0.9rem; padding: 0.5rem 0.75rem;">
+                        ${escapeHtml(sinId)}
+                        <button type="button" class="btn-close btn-close-white ms-2" style="font-size: 0.7rem;" 
+                                data-sin-id="${escapeAttr(sinId)}" onclick="sinCardRemoveSelection(this.dataset.sinId)" aria-label="Remove ${escapeAttr(sinId)}"></button>
+                      </span>
+                    `).join('') :
+                    '<span class="text-muted">No SINs selected yet. Use the "Add SIN" buttons below to select SINs.</span>'
+                  }
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12">
+            <div class="card shadow-lg border-0 bg-body">
+              <div class="card-body p-4">
+                <h5 class="mb-3">Available SINs</h5>
+                <div class="d-flex flex-column gap-3">
+                  ${cardsHtml}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <style>
+      .sin-card { user-select: none; transition: box-shadow .18s, background .18s, border-color .18s; }
+      .sin-card:hover { box-shadow: 0 0.5rem 1.5rem rgba(0,123,255,.12), 0 0.25rem 0.5rem rgba(0,0,0,.08); background: #f5faff; border-color: #0d6efd; }
+      .sin-card-selected { border-width: 2px !important; }
+      .sin-card-row1 { font-size: 1.05rem; }
+      .sin-card-row2 { letter-spacing: 0.01em; }
+      .sin-card-row3 { font-size: 1rem; }
+    </style>
+  `;
+  
+  // Initialize sticky tooltips after rendering using the reusable utility
+  setTimeout(() => {
+    if (typeof initializeStickyTooltips === 'function') {
+      initializeStickyTooltips();
+    } else {
+      console.error('initializeStickyTooltips function not available');
+    }
+  }, 100); // Longer delay to ensure DOM is ready
+}
+
+window.sinCardOnFilter = function(field, value) {
+  sinPageFilters[field] = value;
+  renderSINCardList();
+};
+
+window.sinCardOnDropdownFilter = function(field, value) {
+  sinPageFilters[field] = value;
+  renderSINCardList();
+};
+
+window.sinCardOnSortField = function(field) {
+  sinPageSortField = field;
+  renderSINCardList();
+};
+window.sinCardToggleSortDir = function() {
+  sinPageSortDir *= -1;
+  renderSINCardList();
+};
+
+window.sinCardToggleSelection = function(sinId) {
+  sinPageChecked[sinId] = !sinPageChecked[sinId];
+  renderSINCardList();
+};
+
+window.sinCardRemoveSelection = function(sinId) {
+  delete sinPageChecked[sinId];
+  renderSINCardList();
+};
+
+window.sinCardApplySelected = function() {
+  if (!sinPageReturnInputId) return;
+  let selected = Object.keys(sinPageChecked).filter(sinId => sinPageChecked[sinId]);
+  let input = document.getElementById(sinPageReturnInputId);
+  input.value = selected.join(', ');
+  sinPageGoBack();
+};
+
+window.sinPageGoBack = function() {
+  document.getElementById('sin-page').style.display = 'none';
+  document.getElementById('main-app').style.display = '';
+};
+</script>

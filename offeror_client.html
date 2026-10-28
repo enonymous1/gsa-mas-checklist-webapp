@@ -1,0 +1,111 @@
+<script>
+let sinList = [];
+let sinModal = null;
+let sinFilters = { category: "", search: "" };
+
+function fetchOfferorInfo() {
+  showOfferorInfoLoading(true);
+  google.script.run
+    .withSuccessHandler(renderOfferorInfo)
+    .withFailureHandler(function(error) {
+      showOfferorInfoLoading(false);
+      document.getElementById('offeror-info-form').innerHTML =
+        `<div class="text-danger small">Error loading Offeror Info: ${escapeHtml(error.message || error)}</div>`;
+      console.error("Offeror Info error:", error);
+    })
+    .getOfferorInfo();
+}
+
+function fetchSINList(callback) {
+  if (sinList.length) { if(callback) callback(sinList); return; }
+  google.script.run
+    .withSuccessHandler(function(list) {
+      sinList = list;
+      if(callback) callback(list);
+    })
+    .withFailureHandler(function(error) {
+      console.error("SIN list error:", error);
+      alert("Failed to load SINs: " + (error.message || error));
+    })
+    .getSINList();
+}
+
+// Updated to launch the full-page SIN picker
+function renderOfferorInfo(fields) {
+  showOfferorInfoLoading(false);
+  const form = document.getElementById('offeror-info-form');
+  if (!fields || !fields.length) {
+    form.innerHTML = '<div class="text-muted small">No offeror info found.</div>';
+    return;
+  }
+  form.innerHTML = '';
+  fields.forEach((field, idx) => {
+    const id = 'offeror-field-' + idx;
+    let infoIcon = '';
+    if (field.description) {
+      infoIcon = createTooltipIcon(field.description, 'text-primary');
+    }
+    let input;
+    // Special handling for SINs Offered field
+    if (field.key.toLowerCase().includes('sin') && field.key.toLowerCase().includes('offered')) {
+      input = `
+        <div class="input-group mb-2">
+          <input type="text" id="${id}" class="form-control form-control-sm" value="${escapeAttr(field.value || '')}" placeholder="Add SIN(s), separated by commas">
+          <button class="btn btn-outline-primary btn-sm" type="button" id="sin-page-btn-${idx}" title="Go to SIN selection page">
+            Select from SIN List
+          </button>
+        </div>
+      `;
+      setTimeout(() => {
+        document.getElementById('sin-page-btn-' + idx).onclick = function() {
+          showSINPage(id); // Launch full-page SIN picker
+        };
+      }, 0);
+    } else if (field.acceptedValues && field.acceptedValues.length) {
+      // Special handling for Commodity Type - render as button pills
+      if (field.key.toLowerCase().includes('commodity') && field.key.toLowerCase().includes('type')) {
+        input = `
+          <div class="btn-group mb-2 d-flex" role="group" aria-label="Commodity Type">
+            ${field.acceptedValues.map(v => `
+              <input type="radio" class="btn-check" name="commodity-type-${idx}" id="commodity-${idx}-${escapeAttr(v.replace(/\s+/g, '-').toLowerCase())}" value="${escapeAttr(v)}" ${field.value === v ? 'checked' : ''}>
+              <label class="btn btn-outline-primary btn-sm flex-fill" for="commodity-${idx}-${escapeAttr(v.replace(/\s+/g, '-').toLowerCase())}">${escapeHtml(v)}</label>
+            `).join('')}
+          </div>
+          <input type="hidden" id="${id}" value="${escapeAttr(field.value || '')}">
+        `;
+        setTimeout(() => {
+          // Add event listeners to radio buttons to update hidden input
+          field.acceptedValues.forEach(v => {
+            const radioId = `commodity-${idx}-${v.replace(/\s+/g, '-').toLowerCase()}`;
+            const radio = document.getElementById(radioId);
+            if (radio) {
+              radio.addEventListener('change', function() {
+                if (this.checked) {
+                  document.getElementById(id).value = this.value;
+                }
+              });
+            }
+          });
+        }, 0);
+      } else {
+        // Regular dropdown for other fields
+        input = `<select id="${id}" class="form-select form-select-sm mb-2">
+          <option value="">(Select...)</option>
+          ${field.acceptedValues.map(v =>
+            `<option value="${escapeAttr(v)}"${field.value === v ? ' selected' : ''}>${escapeHtml(v)}</option>`).join('')}
+        </select>`;
+      }
+    } else {
+      input = `<input type="text" id="${id}" class="form-control form-control-sm mb-2" value="${escapeAttr(field.value || '')}" placeholder="Enter value...">`;
+    }
+    const label = `
+      <label for="${id}" class="form-label small fw-semibold mb-2 d-flex align-items-center">
+        <span>${escapeHtml(field.key)}</span>${infoIcon}
+      </label>`;
+    form.innerHTML += `<div class="mb-3">${label}${input}</div>`;
+  });
+  
+  // Initialize sticky tooltips using the reusable utility instead of custom implementation
+  setTimeout(() => initializeStickyTooltips(form), 0);
+}
+</script>

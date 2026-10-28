@@ -1,0 +1,18 @@
+# Ignore these files when pushing to Google Apps Script
+**/*.md
+.gitignore
+.claspignore
+.clasp.json
+.clasp.json.example
+.git/
+.github/
+.vscode/
+node_modules/
+package-lock.json
+package.json
+.gitattributes
+.editorconfig
+tests/
+scripts/
+LICENSE
+CHANGELOG.md

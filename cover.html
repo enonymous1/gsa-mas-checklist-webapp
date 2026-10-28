@@ -1,0 +1,125 @@
+<script>
+let coverDataReady = false;
+let coverUserReady = false;
+let coverLastStage = "Starting...";
+let coverLastPercent = 0;
+
+function updateCoverProgress(stage, percent) {
+  coverLastStage = stage;
+  coverLastPercent = percent;
+  document.getElementById('cover-progress-text').textContent = stage;
+  document.getElementById('cover-progress-bar').style.width = percent + '%';
+}
+
+function onCoverDataReady() {
+  coverDataReady = true;
+  document.getElementById('cover-progress-text').textContent = "Ready!";
+  document.getElementById('cover-progress-bar').style.width = '100%';
+
+  // Hide spinner when ready
+  document.querySelector('#cover-loading-indicator .spinner-border').style.display = 'none';
+
+  if (coverUserReady) {
+    dismissCoverAndShowApp();
+  } else {
+    document.getElementById('cover-begin-btn').disabled = false;
+    document.getElementById('cover-begin-btn').textContent = "Begin";
+  }
+}
+
+function dismissCoverAndShowApp() {
+  const cover = document.getElementById('cover-page');
+  const mainApp = document.getElementById('main-app');
+  cover.classList.add('animate__fadeOutUp');
+  setTimeout(() => {
+    cover.style.display = 'none';
+    mainApp.style.display = '';
+  }, 600);
+}
+
+function initCoverPage() {
+  const cover = document.getElementById('cover-page');
+  const beginBtn = document.getElementById('cover-begin-btn');
+  const loadingIndicator = document.getElementById('cover-loading-indicator');
+  coverDataReady = false;
+  coverUserReady = false;
+  coverLastStage = "Starting...";
+  coverLastPercent = 0;
+
+  loadingIndicator.style.display = '';
+  beginBtn.disabled = true;
+  beginBtn.textContent = "Loading...";
+
+  // Fetch user information first
+  updateCoverProgress("Getting user information...", 10);
+  google.script.run
+    .withSuccessHandler(function(userInfo) {
+      updateWelcomeMessage(userInfo);
+      // Store user info globally for comments
+      if (typeof currentUserInfo !== 'undefined') {
+        currentUserInfo = userInfo;
+      }
+      loadAppData();
+    })
+    .withFailureHandler(function(error) {
+      console.error("Error getting user info:", error);
+      // Continue loading even if user info fails
+      loadAppData();
+    })
+    .getCurrentUser();
+
+  function loadAppData() {
+    updateCoverProgress("Loading checklist items...", 20);
+    prefetchAllParsedChecklists(() => {
+      updateCoverProgress("Loading offeror info...", 60);
+      fetchOfferorInfo();
+      updateCoverProgress("Loading resources...", 80);
+      fetchRelevantResources();
+      setTimeout(() => {
+        updateCoverProgress("Ready!", 100);
+        onCoverDataReady();
+      }, 300);
+    });
+  }
+
+  beginBtn.addEventListener('click', function() {
+    coverUserReady = true;
+    if (coverDataReady) {
+      dismissCoverAndShowApp();
+    } else {
+      beginBtn.disabled = true;
+      beginBtn.textContent = "Loading...";
+    }
+  });
+}
+
+function updateWelcomeMessage(userInfo) {
+  const welcomeElement = document.getElementById('cover-welcome-message');
+  if (welcomeElement) {
+    // Build with text nodes: the display name is derived from the
+    // user's email and must never be inserted as raw HTML.
+    const timeOfDay = getTimeOfDayGreeting();
+    welcomeElement.textContent = '';
+    welcomeElement.appendChild(document.createTextNode(timeOfDay + ', '));
+    if (userInfo && userInfo.hasEmail) {
+      const strong = document.createElement('strong');
+      strong.textContent = userInfo.displayName;
+      welcomeElement.appendChild(strong);
+      welcomeElement.appendChild(document.createTextNode('!'));
+    } else {
+      welcomeElement.appendChild(document.createTextNode('Welcome to the GSA MAS Checklist Tool.'));
+    }
+  }
+}
+
+function getTimeOfDayGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) {
+    return "Good morning";
+  } else if (hour < 17) {
+    return "Good afternoon";
+  } else {
+    return "Good evening";
+  }
+}
+</script>

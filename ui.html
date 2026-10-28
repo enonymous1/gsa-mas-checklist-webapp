@@ -1,0 +1,53 @@
+<script>
+// Shared client helpers. Sheet, comment, and glossary data comes from
+// spreadsheets other people can edit, so every value interpolated into
+// HTML must go through escapeHtml/escapeAttr, and every link href
+// through isSafeHttpUrl. Never interpolate raw sheet data into innerHTML.
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+function escapeAttr(value) {
+  return escapeHtml(value);
+}
+function isSafeHttpUrl(url) {
+  // Absolute http(s) URLs only. Relative strings are rejected: as an
+  // href they would resolve against the web app's own origin, which
+  // is never what a resource row means.
+  try {
+    var parsed = new URL(String(url));
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch (e) {
+    return false;
+  }
+}
+function showChecklistLoading(show) {
+  document.getElementById('checklist-loading').classList.toggle('d-none', !show);
+}
+function showOfferorInfoLoading(show) {
+  document.getElementById('offeror-info-loading').classList.toggle('d-none', !show);
+  document.getElementById('offeror-info-form').classList.toggle('d-none', show);
+}
+function showResourcesLoading(show) {
+  document.getElementById('relevant-resources-loading').classList.toggle('d-none', !show);
+  document.getElementById('relevant-resources-list').classList.toggle('d-none', show);
+}
+function enableTooltips(rootElem=document) {
+  var tooltipTriggerList = [].slice.call(rootElem.querySelectorAll('[data-bs-toggle="tooltip"]'));
+  tooltipTriggerList.forEach(function (el) {
+    new bootstrap.Tooltip(el);
+  });
+}
+function groupBy(array, key) {
+  return array.reduce((result, item) => {
+    const section = item[key] || "No Section";
+    if (!result[section]) result[section] = [];
+    result[section].push(item);
+    return result;
+  }, {});
+}
+</script>
